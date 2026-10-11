@@ -3,6 +3,10 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 
 import { OrganizationsModule } from './organizations/organizations.module.js';
 import { DepartmentsModule } from './departments/departments.module.js';
+import { RolesModule } from './roles/roles.module';
+import { PermissionsModule } from './permissions/permissions.module.js';
+import { RolePermissionsModule } from './role-permissions/role-permissions.module.js';
+import { UsersModule } from './users/users.module';
 
 @Module({
   imports: [
@@ -13,14 +17,16 @@ import { DepartmentsModule } from './departments/departments.module.js';
       username: '',
       password: '',
       database: '',
-
       autoLoadEntities: true,
-
-      synchronize: true,
+      synchronize: false, // Set to true only in development, false in production
     }),
 
     OrganizationsModule,
     DepartmentsModule,
+    RolesModule,
+    PermissionsModule,
+    RolePermissionsModule,
+    UsersModule,
   ],
 })
 export class AppModule {}

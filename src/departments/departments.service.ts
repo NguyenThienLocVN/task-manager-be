@@ -113,19 +113,35 @@ export class DepartmentsService {
     );
   }
 
-  async findByOrganization(
-    organizationId: string,
+  async findAll(
+  organizationId?: string,
   ) {
-    return this.departmentRepository.find({
-      where: {
-        organizationId,
-      },
+    if (organizationId) {
+      return this.departmentRepository.find({
+        where: {
+          organizationId,
+        },
 
+        relations: {
+          organization: true,
+          parent: true,
+        },
+
+        order: {
+          sortOrder: 'ASC',
+          name: 'ASC',
+        },
+      });
+    }
+
+    return this.departmentRepository.find({
       relations: {
+        organization: true,
         parent: true,
       },
 
       order: {
+        organizationId: 'ASC',
         sortOrder: 'ASC',
         name: 'ASC',
       },
@@ -159,27 +175,9 @@ export class DepartmentsService {
     id: string,
     dto: UpdateDepartmentDto,
   ) {
-    const department =
-      await this.findOne(id);
+    const department = await this.findOne(id);
 
-    const organizationId =
-      dto.organizationId ??
-      department.organizationId;
-
-    if (dto.organizationId) {
-      const organization =
-        await this.organizationRepository.findOne({
-          where: {
-            id: dto.organizationId,
-          },
-        });
-
-      if (!organization) {
-        throw new NotFoundException(
-          'Cơ quan không tồn tại',
-        );
-      }
-    }
+    const organizationId = department.organizationId;
 
     if (dto.code) {
       const code =
@@ -189,7 +187,7 @@ export class DepartmentsService {
         await this.departmentRepository
           .createQueryBuilder('department')
           .where(
-            'department.organizationId = :organizationId',
+            'department.organization_id = :organizationId',
             {
               organizationId,
             },
