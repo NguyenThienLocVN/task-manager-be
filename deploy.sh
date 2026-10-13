@@ -35,6 +35,6 @@ sudo systemctl is-active --quiet "$SERVICE"
 
 echo "=== 7. Kiem tra HTTP ==="
 curl --fail --silent --show-error \
-  https://27.71.17.228/api/roles > /dev/null
+  http://127.0.0.1:8080/api/roles > /dev/null
 
 echo "=== DEPLOY THANH CONG ==="
