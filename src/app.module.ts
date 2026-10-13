@@ -20,9 +20,9 @@ import { ConfigModule } from '@nestjs/config';
       type: 'postgres',
       host: 'localhost',
       port: 5432,
-      username: '',
-      password: '',
-      database: '',
+      username: 'task_admin',
+      password: 'trinhthu2026!',
+      database: 'task_management',
       autoLoadEntities: true,
       synchronize: false, // Set to true only in development, false in production
     }),
