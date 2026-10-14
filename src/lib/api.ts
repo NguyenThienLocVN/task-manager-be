@@ -1,34 +1,23 @@
-const API_URL = process.env.NEXT_PUBLIC_API_URL!;
+const API_URL = (
+  process.env.NEXT_PUBLIC_API_URL || "/api"
+).replace(/\/+$/, "");
 
-export async function login(
-    username: string,
-    password: string,
-) {
-    const response =
-        await fetch(`${API_URL}/auth/login`,
-            {
-                method: 'POST',
+export async function login(username: string, password: string) {
+  const response = await fetch(`${API_URL}/auth/login`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ username, password }),
+    cache: "no-store",
+  });
 
-                headers: {
-                    'Content-Type': 'application/json',
-                },
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error("Login HTTP status:", response.status);
+    console.error("Login response:", errorText);
+    throw new Error(`Đăng nhập thất bại: HTTP ${response.status}`);
+  }
 
-                credentials: 'include',
-
-                body: JSON.stringify({
-                    username,
-                    password,
-                }),
-            },
-        );
-
-    if (!response.ok) {
-        const error = await response.json();
-
-        throw new Error(
-            error.message || 'Đăng nhập thất bại',
-        );
-    }
-
-    return response.json();
+  return response.json();
 }
