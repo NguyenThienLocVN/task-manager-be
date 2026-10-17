@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Post, Req, Res, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, Post, Req, Res, UnauthorizedException, UseGuards } from '@nestjs/common';
 
 import type { Request, Response } from 'express';
 
@@ -84,6 +84,26 @@ export class AuthController {
       user:
         result.user,
     };
+  }
+
+  @Post('refresh')
+  @HttpCode(200)
+  async refresh(
+    @Req()
+    request: Request,
+  ) {
+    const refreshToken =
+      request.cookies?.refresh_token;
+
+    if (!refreshToken) {
+      throw new UnauthorizedException(
+        'Thiếu refresh token',
+      );
+    }
+
+    return this.authService.refresh(
+      refreshToken,
+    );
   }
 
   @Post('logout')
