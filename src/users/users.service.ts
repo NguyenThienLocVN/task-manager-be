@@ -333,12 +333,12 @@ export class UsersService {
       );
     }
 
-    if (departmentId) {
-      await this.validateDepartment(
+    const department = departmentId
+      ? await this.validateDepartment(
         departmentId,
         organizationId,
-      );
-    }
+      )
+      : null;
 
     if (dto.fullName !== undefined) {
       user.fullName =
@@ -367,6 +367,8 @@ export class UsersService {
     ) {
       user.departmentId =
         dto.departmentId;
+      user.department =
+        department;
     }
 
     if (dto.jobTitle !== undefined) {
