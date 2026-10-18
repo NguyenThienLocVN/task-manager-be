@@ -8,7 +8,7 @@ import type { AuthUser } from '../auth/interfaces/auth-user.interface';
 import { TaskSecurityService } from './security/task-security.service';
 import { TasksService } from './tasks.service';
 import {
-  CommentDto, CreateTaskDto, ProgressDto, QueryTasksDto, UpdateTaskDto,
+  CommentDto, CreateTaskDto, ProgressDto, QueryTaskReportDto, QueryTasksDto, UpdateTaskDto,
 } from './dto/tasks.dto';
 
 const TASK_VIEW_PERMISSIONS = [
@@ -70,8 +70,13 @@ export class TasksController {
   }
 
   @Get('statistics')
-  async stats(@CurrentUser() user: AuthUser) {
-    return this.service.statistics(await this.authorizeAny(user, TASK_VIEW_PERMISSIONS));
+  async stats(@CurrentUser() user: AuthUser, @Query() q: QueryTasksDto) {
+    return this.service.statistics(await this.authorizeAny(user, TASK_VIEW_PERMISSIONS), q);
+  }
+
+  @Get('statistics/report')
+  async report(@CurrentUser() user: AuthUser, @Query() q: QueryTaskReportDto) {
+    return this.service.report(await this.authorizeAny(user, TASK_VIEW_PERMISSIONS), q);
   }
 
   @Get(':id')

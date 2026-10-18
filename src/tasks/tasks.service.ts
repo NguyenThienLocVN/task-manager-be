@@ -48,7 +48,7 @@ export class TasksService {
     });
   }
   async get(actor: Actor, id: string) { const t=await this.task(this.db.manager,actor,id); await this.canRead(this.db.manager,actor,t); return t; }
-  async list(actor: Actor, q: QueryTasksDto, mine=false) {
+  private async buildFilters(actor: Actor, q: Partial<QueryTasksDto>, mine=false) {
     const params:any[]=[this.org(actor),actor.id];
     const visibility = [
       't.created_by=$2',
@@ -68,10 +68,22 @@ export class TasksService {
     if(q.documentId) add('t.document_id',q.documentId);
     if(q.responsibleUserId) add('t.responsible_user_id',q.responsibleUserId);
     if(q.status) add('t.status',q.status);
+    if(q.departmentId) add('t.department_id',q.departmentId);
+    const range=(from?:string,to?:string,label='')=>{if(from&&to&&from>to) throw new BadRequestException(`${label}From must not be after ${label}To`);};
+    range(q.startDateFrom,q.startDateTo,'startDate');
+    range(q.dueDateFrom,q.dueDateTo,'dueDate');
+    const addCmp=(field:string,op:'>='|'<=',value?:string)=>{if(!value) return;params.push(value);filters.push(`${field} ${op} $${params.length}::date`)};
+    addCmp('t.start_date','>=',q.startDateFrom);
+    addCmp('t.start_date','<=',q.startDateTo);
+    addCmp('t.due_date','>=',q.dueDateFrom);
+    addCmp('t.due_date','<=',q.dueDateTo);
     if(q.search){params.push('%'+q.search+'%');filters.push(`(t.title ILIKE $${params.length} OR t.task_code ILIKE $${params.length})`);}
     if(q.overdue==='true') filters.push(`t.due_date < CURRENT_DATE AND t.status NOT IN ('COMPLETED','CANCELLED')`);
     if(mine) filters.push(`(t.responsible_user_id=$2 OR EXISTS(SELECT 1 FROM public.task_assignments a WHERE a.task_id=t.id AND a.user_id=$2 AND a.is_active=true))`);
-    const where=filters.join(' AND ');
+    return {where:filters.join(' AND '),params};
+  }
+  async list(actor: Actor, q: QueryTasksDto, mine=false) {
+    const {where,params}=await this.buildFilters(actor,q,mine);
     const count=await this.db.query(`SELECT count(*)::int total FROM public.tasks t WHERE ${where}`,params);
     const limit=q.limit??20,page=q.page??1;
     const data=await this.db.query(`SELECT t.* FROM public.tasks t WHERE ${where} ORDER BY t.created_at DESC,t.id DESC LIMIT $${params.length+1} OFFSET $${params.length+2}`,[...params,limit,(page-1)*limit]);
@@ -160,16 +172,33 @@ export class TasksService {
     const sort=table==='task_assignments'?'assigned_at':'created_at';
     return this.db.query(`SELECT * FROM public.${table} WHERE task_id=$1 ORDER BY ${sort} DESC LIMIT 200`,[id]);
   }
-  async statistics(actor:Actor) {
-    const params: unknown[] = [this.org(actor),actor.id];
-    let departmentScope = '';
-    if (await this.security.canViewDepartment(actor, actor.departmentId)) {
-      params.push(actor.departmentId);
-      departmentScope = ` OR tasks.department_id=$${params.length}`;
-    }
-    const scope = `(created_by=$2 OR assigned_by=$2 OR responsible_user_id=$2 OR EXISTS(SELECT 1 FROM public.task_assignments a WHERE a.task_id=tasks.id AND a.user_id=$2 AND a.is_active=true) OR EXISTS(SELECT 1 FROM public.task_department_managers dm WHERE dm.department_id=tasks.department_id AND dm.user_id=$2 AND dm.is_active=true)${departmentScope})`;
-    const rows=await this.db.query(`SELECT status,count(*)::int AS count FROM public.tasks WHERE organization_id=$1 AND ${scope} GROUP BY status ORDER BY status`,params);
-    const overdue=await this.db.query(`SELECT count(*)::int AS count FROM public.tasks WHERE organization_id=$1 AND due_date<CURRENT_DATE AND status NOT IN ('COMPLETED','CANCELLED') AND ${scope}`,params);
+  async statistics(actor:Actor, q: Partial<QueryTasksDto> = {}) {
+    const {where,params}=await this.buildFilters(actor,q);
+    const rows=await this.db.query(`SELECT t.status,count(*)::int AS count FROM public.tasks t WHERE ${where} GROUP BY t.status ORDER BY t.status`,params);
+    const overdue=await this.db.query(`SELECT count(*)::int AS count FROM public.tasks t WHERE ${where} AND t.due_date<CURRENT_DATE AND t.status NOT IN ('COMPLETED','CANCELLED')`,params);
     return {byStatus:rows,overdue:overdue[0].count};
+  }
+  async report(actor:Actor, q: Partial<QueryTasksDto> & {groupBy?: 'department'|'responsible'}) {
+    const {groupBy='department',...filters}=q;
+    const {where,params}=await this.buildFilters(actor,filters);
+    const byDept=groupBy==='department';
+    const key=byDept?'t.department_id':'t.responsible_user_id';
+    const join=byDept
+      ?'LEFT JOIN public.departments g ON g.id=t.department_id'
+      :'LEFT JOIN public.users g ON g.id=t.responsible_user_id';
+    const name=byDept?'g.name':'g.full_name';
+    const data=await this.db.query(`SELECT ${key} AS "groupId", ${name} AS "groupName",
+      count(*)::int AS total,
+      count(*) FILTER (WHERE t.status='NEW')::int AS "new",
+      count(*) FILTER (WHERE t.status='ASSIGNED')::int AS assigned,
+      count(*) FILTER (WHERE t.status='IN_PROGRESS')::int AS "inProgress",
+      count(*) FILTER (WHERE t.status='PENDING_REVIEW')::int AS "pendingReview",
+      count(*) FILTER (WHERE t.status='COMPLETED')::int AS completed,
+      count(*) FILTER (WHERE t.status='CANCELLED')::int AS cancelled,
+      count(*) FILTER (WHERE t.due_date<CURRENT_DATE AND t.status NOT IN ('COMPLETED','CANCELLED'))::int AS overdue,
+      COALESCE(round(avg(t.progress_percent),1),0)::float AS "avgProgress"
+      FROM public.tasks t ${join} WHERE ${where}
+      GROUP BY ${key}, ${name} ORDER BY total DESC, ${name} NULLS LAST`,params);
+    return {groupBy,data};
   }
 }

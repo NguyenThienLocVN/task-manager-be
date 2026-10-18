@@ -1,4 +1,4 @@
-import { PartialType } from '@nestjs/mapped-types';
+import { OmitType, PartialType } from '@nestjs/mapped-types';
 import { IsBoolean, IsDateString, IsIn, IsInt, IsNotEmpty, IsOptional, IsString, IsUUID, Max, MaxLength, Min } from 'class-validator';
 import { Type } from 'class-transformer';
 
@@ -29,8 +29,17 @@ export class QueryTasksDto {
   @IsOptional() @IsIn(TASK_STATUSES) status?: TaskStatus;
   @IsOptional() @IsString() search?: string;
   @IsOptional() @IsIn(['true','false']) overdue?: string;
+  @IsOptional() @IsUUID() departmentId?: string;
+  @IsOptional() @IsDateString() startDateFrom?: string;
+  @IsOptional() @IsDateString() startDateTo?: string;
+  @IsOptional() @IsDateString() dueDateFrom?: string;
+  @IsOptional() @IsDateString() dueDateTo?: string;
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) page: number = 1;
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(100) limit: number = 20;
+}
+// Bộ lọc dùng chung cho thống kê/báo cáo (không phân trang).
+export class QueryTaskReportDto extends OmitType(QueryTasksDto, ['page', 'limit'] as const) {
+  @IsOptional() @IsIn(['department', 'responsible']) groupBy: 'department' | 'responsible' = 'department';
 }
 export class SetStatusDto {
   @IsIn(TASK_STATUSES) status!: TaskStatus;
