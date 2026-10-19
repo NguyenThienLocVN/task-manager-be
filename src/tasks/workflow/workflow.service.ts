@@ -90,11 +90,14 @@ export class WorkflowService {
  });}
  async review(a:Actor,id:string,dto:ReviewTaskDto){return this.db.transaction(async m=>{
   const t=await this.task(m,a,id);
-  if(!this.issuer(a,t))throw new ForbiddenException('Only issuer can review');
+  const canReview=this.issuer(a,t)
+   || (t.department_id && await this.isDeptManager(m,a,t.department_id))
+   || await this.security.requirePermission(a,'TASK_APPROVE').then(()=>true,()=>false);
+  if(!canReview)throw new ForbiddenException('Only issuer, department manager or TASK_APPROVE holder can review');
   if(t.status!=='PENDING_REVIEW')throw new BadRequestException('Task is not pending review');
   const status=dto.decision==='APPROVE'?'COMPLETED':'IN_PROGRESS';
-  await m.query(`UPDATE public.tasks SET status=$2,progress_percent=CASE WHEN $2='COMPLETED' THEN 100 ELSE progress_percent END,
-  completed_at=CASE WHEN $2='COMPLETED' THEN now() ELSE NULL END,updated_at=now() WHERE id=$1`,[id,status]);
+  await m.query(`UPDATE public.tasks SET status=$2::varchar,progress_percent=CASE WHEN $2::varchar='COMPLETED' THEN 100 ELSE progress_percent END,
+  completed_at=CASE WHEN $2::varchar='COMPLETED' THEN now() ELSE NULL END,updated_at=now() WHERE id=$1`,[id,status]);
   await this.history(m,id,a.id,'REVIEW',t.status,status+(dto.comment?': '+dto.comment:''));
   return {status,decision:dto.decision};
  });}

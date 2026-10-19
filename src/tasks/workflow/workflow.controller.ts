@@ -93,7 +93,8 @@ export class WorkflowController {
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: ReviewTaskDto,
   ) {
-    return this.service.review(await this.authorize(user, 'TASK_APPROVE'), id, dto);
+    // Quyền duyệt (người giao, trưởng phòng hoặc TASK_APPROVE) được kiểm tra trong WorkflowService.review.
+    return this.service.review(await this.security.actor(user), id, dto);
   }
 
   @Get(':id/routes')
