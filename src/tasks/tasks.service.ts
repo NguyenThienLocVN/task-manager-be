@@ -2,6 +2,7 @@ import { BadRequestException, ForbiddenException, Injectable, NotFoundException 
 import { DataSource, EntityManager } from 'typeorm';
 import { CommentDto, CreateTaskDto, ProgressDto, QueryTasksDto, UpdateTaskDto } from './dto/tasks.dto';
 import type { TaskActor as Actor } from './security/task-security.service';
+import { notifyUsers, NotificationType } from '../notifications/notification.helper';
 import { TaskSecurityService } from './security/task-security.service';
 
 
@@ -163,8 +164,13 @@ export class TasksService {
       const exists=await this.db.query('SELECT 1 FROM public.task_comments WHERE id=$1 AND task_id=$2',[dto.parentCommentId,id]);
       if(!exists.length) throw new BadRequestException('Parent comment not in task');
     }
-    const rows=await this.db.query('INSERT INTO public.task_comments(task_id,user_id,parent_comment_id,content,created_at) VALUES($1,$2,$3,$4,NOW()) RETURNING *',[t.id,actor.id,dto.parentCommentId??null,dto.content]);
-    return rows[0];
+    return this.db.transaction(async m=>{
+      const rows=await m.query('INSERT INTO public.task_comments(task_id,user_id,parent_comment_id,content,created_at) VALUES($1,$2,$3,$4,NOW()) RETURNING *',[t.id,actor.id,dto.parentCommentId??null,dto.content]);
+      const assignees=await m.query('SELECT user_id FROM public.task_assignments WHERE task_id=$1 AND is_active=true',[t.id]);
+      await notifyUsers(m,{actorId:actor.id,taskId:t.id,recipientIds:[t.created_by,t.assigned_by,t.responsible_user_id,...assignees.map((r:any)=>r.user_id)],
+        type:NotificationType.TASK_COMMENT,title:'Bình luận mới trong công việc',content:dto.content.slice(0,200)});
+      return rows[0];
+    });
   }
   async children(actor:Actor,id:string,table:typeof allowedChildTables[number]) {
     if(!allowedChildTables.includes(table)) throw new BadRequestException('Invalid table');

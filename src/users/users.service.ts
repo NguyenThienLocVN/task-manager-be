@@ -4,7 +4,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 
 import { In, Repository } from 'typeorm';
 
-import * as bcrypt from 'bcrypt';
+import * as argon2 from 'argon2';
 
 import { User } from './entities/user.entity';
 import { UserRole } from '../user-roles/entities/user-role.entity';
@@ -113,9 +113,9 @@ export class UsersService {
     }
 
     const passwordHash =
-      await bcrypt.hash(
+      await argon2.hash(
         dto.password,
-        12,
+        { type: argon2.argon2id },
       );
 
     const user =
@@ -455,9 +455,9 @@ export class UsersService {
     }
 
     user.passwordHash =
-      await bcrypt.hash(
+      await argon2.hash(
         dto.newPassword,
-        12,
+        { type: argon2.argon2id },
       );
 
     await this.userRepository.save(

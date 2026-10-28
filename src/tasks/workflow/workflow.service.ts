@@ -1,6 +1,7 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { DataSource, EntityManager } from 'typeorm';
 import { DelegateTaskDto, ReviewTaskDto, RouteTaskDto, SubmitTaskDto } from './workflow.dto';
+import { notifyUsers, NotificationType } from '../../notifications/notification.helper';
 import { TaskSecurityService, type TaskActor as Actor } from '../security/task-security.service';
 @Injectable()
 export class WorkflowService {
@@ -59,16 +60,20 @@ export class WorkflowService {
   if(dto.routeType==='DIRECT')await m.query(`INSERT INTO public.task_assignments(task_id,user_id,assignment_type,assigned_by,assigned_at,note,is_active)
    VALUES($1,$2,'MAIN',$3,now(),$4,true)`,[id,dto.assigneeId,a.id,dto.note??null]);
   await this.history(m,id,a.id,'ROUTE',t.status,dto.routeType+':'+dto.departmentId+':'+(dto.assigneeId??''));
+  const recipients=dto.routeType==='DIRECT'?[dto.assigneeId]:(await m.query('SELECT user_id FROM public.task_department_managers WHERE department_id=$1 AND is_active=true',[dto.departmentId])).map((r:any)=>r.user_id);
+  await notifyUsers(m,{actorId:a.id,taskId:id,recipientIds:recipients,type:NotificationType.TASK_ROUTED,title:'Bạn được giao công việc mới',content:t.title+(dto.note?': '+dto.note:'')});
   return rows[0];
  });}
  async accept(a:Actor,id:string){return this.db.transaction(async m=>{
-  await this.task(m,a,id);const r=await this.activeRoute(m,id);
+  const t=await this.task(m,a,id);const r=await this.activeRoute(m,id);
   if(!r || r.route_status!=='PENDING')throw new BadRequestException('No pending route');
   const allowed=r.route_type==='DIRECT'?r.assignee_id===a.id:await this.isDeptManager(m,a,r.department_id);
   if(!allowed)throw new ForbiddenException('Only recipient can accept');
   await m.query(`UPDATE public.task_workflow_routes SET route_status='ACCEPTED',accepted_by=$2,accepted_at=now() WHERE id=$1`,[r.id,a.id]);
   if(r.route_type==='DIRECT')await m.query(`UPDATE public.tasks SET status='IN_PROGRESS',updated_at=now() WHERE id=$1`,[id]);
-  await this.history(m,id,a.id,'ACCEPT',r.route_type,'ACCEPTED');return {accepted:true,routeId:r.id};
+  await this.history(m,id,a.id,'ACCEPT',r.route_type,'ACCEPTED');
+  await notifyUsers(m,{actorId:a.id,taskId:id,recipientIds:[t.created_by,t.assigned_by],type:NotificationType.TASK_ACCEPTED,title:'Công việc đã được tiếp nhận',content:t.title});
+  return {accepted:true,routeId:r.id};
  });}
  async delegate(a:Actor,id:string,dto:DelegateTaskDto){return this.db.transaction(async m=>{
   const t=await this.task(m,a,id);const r=await this.activeRoute(m,id);
@@ -79,6 +84,7 @@ export class WorkflowService {
   await m.query(`INSERT INTO public.task_assignments(task_id,user_id,assignment_type,assigned_by,assigned_at,note,is_active) VALUES($1,$2,'MAIN',$3,NOW(),$4,true)`,[id,dto.assigneeId,a.id,dto.note??null]);
   await m.query(`UPDATE public.tasks SET responsible_user_id=$2,updated_at=now(),status='ASSIGNED' WHERE id=$1`,[id,dto.assigneeId]);
   await this.history(m,id,a.id,'DELEGATE',t.responsible_user_id,dto.assigneeId);
+  await notifyUsers(m,{actorId:a.id,taskId:id,recipientIds:[dto.assigneeId],type:NotificationType.TASK_DELEGATED,title:'Bạn được phân công công việc',content:t.title+(dto.note?': '+dto.note:'')});
   return {taskId:id,responsibleUserId:dto.assigneeId};
  });}
  async submit(a:Actor,id:string,dto:SubmitTaskDto){return this.db.transaction(async m=>{
@@ -86,7 +92,9 @@ export class WorkflowService {
   if(!r||r.route_status!=='ACCEPTED'||t.responsible_user_id!==a.id)throw new ForbiddenException('Only accepted responsible user can submit');
   if(!['ASSIGNED','IN_PROGRESS'].includes(t.status))throw new BadRequestException('Invalid task status');
   await m.query(`UPDATE public.tasks SET status='PENDING_REVIEW',result=COALESCE($2,result),updated_at=now() WHERE id=$1`,[id,dto.result??null]);
-  await this.history(m,id,a.id,'SUBMIT_REVIEW',t.status,'PENDING_REVIEW');return {status:'PENDING_REVIEW'};
+  await this.history(m,id,a.id,'SUBMIT_REVIEW',t.status,'PENDING_REVIEW');
+  await notifyUsers(m,{actorId:a.id,taskId:id,recipientIds:[t.created_by,t.assigned_by],type:NotificationType.TASK_SUBMITTED,title:'Công việc chờ duyệt',content:t.title});
+  return {status:'PENDING_REVIEW'};
  });}
  async review(a:Actor,id:string,dto:ReviewTaskDto){return this.db.transaction(async m=>{
   const t=await this.task(m,a,id);
@@ -99,6 +107,8 @@ export class WorkflowService {
   await m.query(`UPDATE public.tasks SET status=$2::varchar,progress_percent=CASE WHEN $2::varchar='COMPLETED' THEN 100 ELSE progress_percent END,
   completed_at=CASE WHEN $2::varchar='COMPLETED' THEN now() ELSE NULL END,updated_at=now() WHERE id=$1`,[id,status]);
   await this.history(m,id,a.id,'REVIEW',t.status,status+(dto.comment?': '+dto.comment:''));
+  await notifyUsers(m,{actorId:a.id,taskId:id,recipientIds:[t.responsible_user_id],type:dto.decision==='APPROVE'?NotificationType.TASK_APPROVED:NotificationType.TASK_REJECTED,
+   title:dto.decision==='APPROVE'?'Công việc đã được duyệt':'Công việc bị yêu cầu làm lại',content:t.title+(dto.comment?': '+dto.comment:'')});
   return {status,decision:dto.decision};
  });}
  async routes(a:Actor,id:string){
