@@ -1,18 +1,29 @@
 import { BadRequestException, Body, Controller, Delete, Get, Param, ParseUUIDPipe, Patch, Post,
-  Query, Res, StreamableFile, UploadedFile, UseInterceptors } from '@nestjs/common';
+  Query, Res, StreamableFile, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import type { Response } from 'express';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import type { AuthUser } from '../auth/interfaces/auth-user.interface';
 import { DocumentsService } from './documents.service';
 import { CreateDocumentDto } from './dto/create-document.dto';
 import { UpdateDocumentDto } from './dto/update-document.dto';
 import { QueryDocumentsDto } from './dto/query-documents.dto';
+import { DocumentDirection } from './dto/document-direction.enum';
 import { multerOptions, openStoredFile } from './file-storage';
+import { TaskSecurityService } from '../tasks/security/task-security.service';
 
-// IMPORTANT: add your application's authentication & document authorization guards
-// at this controller before exposing the routes outside a trusted environment.
 @Controller('documents')
+@UseGuards(JwtAuthGuard)
 export class DocumentsController {
-  constructor(private readonly service: DocumentsService) {}
+  constructor(
+    private readonly service: DocumentsService,
+    private readonly security: TaskSecurityService,
+  ) {}
+
+  private actor(user: AuthUser) {
+    return this.security.actor(user);
+  }
 
   @Post()
   @UseInterceptors(FileInterceptor('file', multerOptions))
@@ -21,7 +32,23 @@ export class DocumentsController {
   }
 
   @Get()
-  list(@Query() query: QueryDocumentsDto) { return this.service.list(query); }
+  list(@CurrentUser() user: AuthUser, @Query() query: QueryDocumentsDto) {
+    return this.actor(user).then((actor) => this.service.list(query, actor));
+  }
+
+  @Get('inbox')
+  inbox(@CurrentUser() user: AuthUser, @Query() query: QueryDocumentsDto) {
+    return this.actor(user).then((actor) =>
+      this.service.list(query, actor, DocumentDirection.INCOMING),
+    );
+  }
+
+  @Get('outbox')
+  outbox(@CurrentUser() user: AuthUser, @Query() query: QueryDocumentsDto) {
+    return this.actor(user).then((actor) =>
+      this.service.list(query, actor, DocumentDirection.OUTGOING),
+    );
+  }
 
   @Get('statistics/by-field')
   statisticsByField() { return this.service.statisticsByField(); }

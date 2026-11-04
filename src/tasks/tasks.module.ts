@@ -10,5 +10,6 @@ import { TaskSecurityService } from './security/task-security.service';
   imports: [JwtModule.register({})],
   controllers: [TasksController, WorkflowController],
   providers: [JwtAuthGuard, TaskSecurityService, TasksService, WorkflowService],
+  exports: [JwtAuthGuard, TaskSecurityService],
 })
 export class TasksModule {}

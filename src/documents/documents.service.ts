@@ -6,7 +6,9 @@ import { DocumentFieldEntity } from './document-field.entity';
 import { CreateDocumentDto } from './dto/create-document.dto';
 import { UpdateDocumentDto } from './dto/update-document.dto';
 import { QueryDocumentsDto } from './dto/query-documents.dto';
+import { DocumentDirection } from './dto/document-direction.enum';
 import { deleteStoredFile, persistFile } from './file-storage';
+import type { TaskActor } from '../tasks/security/task-security.service';
 
 @Injectable()
 export class DocumentsService {
@@ -37,9 +39,92 @@ export class DocumentsService {
     }
   }
 
-  async list(query: QueryDocumentsDto) {
-    const { page = 1, limit = 20, search, status, fieldId } = query;
+  async list(
+    query: QueryDocumentsDto,
+    actor: TaskActor,
+    direction = query.direction ?? DocumentDirection.INCOMING,
+  ) {
+    const { page, limit, search, status, fieldId } = query;
     const qb = this.repo.createQueryBuilder('d');
+    if (direction === DocumentDirection.INCOMING) {
+      qb.andWhere(
+        `(d.receivedBy = :actorId OR EXISTS (
+          SELECT 1
+          FROM public.tasks t
+          WHERE t.document_id = d.id
+            AND t.organization_id = :organizationId
+            AND (
+              (
+                  t.status = 'PENDING_REVIEW'
+                  AND (t.created_by = :actorId OR t.assigned_by = :actorId)
+              )
+              OR (
+                  t.status <> 'PENDING_REVIEW'
+                  AND (
+                    t.responsible_user_id = :actorId
+                    OR EXISTS (
+                      SELECT 1 FROM public.task_assignments a
+                      WHERE a.task_id = t.id AND a.user_id = :actorId AND a.is_active = TRUE
+                    )
+                    OR EXISTS (
+                      SELECT 1
+                      FROM public.task_workflow_routes r
+                      WHERE r.task_id = t.id
+                    AND r.route_status IN ('PENDING', 'ACCEPTED')
+                    AND (
+                      (r.route_type = 'DIRECT' AND r.assignee_id = :actorId)
+                      OR (
+                        r.route_type = 'DEPARTMENT'
+                        AND (
+                          EXISTS (
+                            SELECT 1 FROM public.task_department_managers dm
+                            WHERE dm.department_id = r.department_id
+                              AND dm.user_id = :actorId AND dm.is_active = TRUE
+                          )
+                          OR EXISTS (
+                            SELECT 1
+                            FROM public.user_roles ur
+                            JOIN public.roles role ON role.id = ur.role_id
+                            JOIN public.users u ON u.id = ur.user_id
+                            WHERE ur.user_id = :actorId
+                              AND role.code = 'LANH_DAO_PHONG'
+                              AND role.is_active = TRUE
+                              AND u.department_id = r.department_id
+                              AND u.organization_id = t.organization_id
+                              AND u.is_active = TRUE
+                              AND u.is_locked = FALSE
+                          )
+                        )
+                      )
+                    )
+                    )
+                  )
+              )
+            )
+        ))`,
+        { actorId: actor.id, organizationId: actor.organizationId },
+      );
+    } else {
+      qb.andWhere(
+        `EXISTS (
+          SELECT 1
+          FROM public.tasks t
+          WHERE t.document_id = d.id
+            AND t.organization_id = :organizationId
+            AND (
+              t.created_by = :actorId
+              OR t.assigned_by = :actorId
+              OR EXISTS (
+                SELECT 1 FROM public.task_history h
+                WHERE h.task_id = t.id
+                  AND h.performed_by = :actorId
+                  AND h.action = 'SUBMIT_REVIEW'
+              )
+            )
+        )`,
+        { actorId: actor.id, organizationId: actor.organizationId },
+      );
+    }
     if (search) qb.andWhere('(d.title ILIKE :q OR d.documentNo ILIKE :q OR d.issuingAgency ILIKE :q)', { q: `%${search}%` });
     if (status) qb.andWhere('d.status = :status', { status });
     if (fieldId) qb.andWhere('d.fieldId = :fieldId', { fieldId });

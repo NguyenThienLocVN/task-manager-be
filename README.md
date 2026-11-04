@@ -31,6 +31,14 @@
 $ npm install
 ```
 
+## Task result file upload
+
+`POST /api/tasks/{id}/submit-review` still accepts the existing JSON body (`result`). To attach a file, send `multipart/form-data` with an optional `result` text field and a `file` field. The endpoint keeps the existing `TASK_SUBMIT` permission and workflow checks. It accepts one PDF, PNG, or JPG file up to 25 MB; uploading a replacement file replaces the previous result attachment.
+
+Task details (`GET /api/tasks/{id}`) include a `resultFiles` array with the file name, MIME type, size, creation time, and `downloadUrl`. Download an attachment from that URL; the endpoint requires task-view permission and verifies that the file belongs to the task.
+
+Apply `database/migrations/20261103_create_task_result_files.sql` before deploying this change. Uploaded files are stored using the existing local upload storage.
+
 ## Compile and run the project
 
 ```bash

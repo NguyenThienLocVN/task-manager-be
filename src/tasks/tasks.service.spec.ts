@@ -22,6 +22,7 @@ describe('TasksService department visibility', () => {
     const managerQuery = vi.fn()
       .mockResolvedValueOnce([task])
       .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
       .mockResolvedValueOnce([]);
     const db = {
       manager: { query: managerQuery },
@@ -31,8 +32,51 @@ describe('TasksService department visibility', () => {
     } as unknown as TaskSecurityService;
     const service = new TasksService(db, security);
 
-    await expect(service.get(actor, task.id)).resolves.toEqual(task);
+    await expect(service.get(actor, task.id)).resolves.toEqual({
+      ...task,
+      resultFiles: [],
+    });
     expect(security.canViewDepartment).toHaveBeenCalledWith(actor, task.department_id);
+  });
+
+  it('returns result file metadata and a task-scoped download URL', async () => {
+    const task = {
+      id: 'task-id',
+      organization_id: actor.organizationId,
+      department_id: actor.departmentId,
+      created_by: actor.id,
+      assigned_by: actor.id,
+      responsible_user_id: null,
+    };
+    const file = {
+      id: 'file-id',
+      file_name: 'result.pdf',
+      mime_type: 'application/pdf',
+      file_size: '1234',
+      created_at: new Date('2026-11-03T00:00:00.000Z'),
+    };
+    const managerQuery = vi.fn()
+      .mockResolvedValueOnce([task])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([file]);
+    const db = {
+      manager: { query: managerQuery },
+    } as unknown as DataSource;
+    const security = {
+      canViewDepartment: vi.fn().mockResolvedValue(false),
+    } as unknown as TaskSecurityService;
+    const service = new TasksService(db, security);
+
+    await expect(service.get(actor, task.id)).resolves.toMatchObject({
+      resultFiles: [{
+        id: file.id,
+        fileName: file.file_name,
+        mimeType: file.mime_type,
+        fileSize: file.file_size,
+        downloadUrl: `/api/tasks/${task.id}/result-files/${file.id}/download`,
+      }],
+    });
   });
 
   it('filters task lists by documentId in the database query', async () => {

@@ -48,7 +48,42 @@ export class TasksService {
       return rows[0];
     });
   }
-  async get(actor: Actor, id: string) { const t=await this.task(this.db.manager,actor,id); await this.canRead(this.db.manager,actor,t); return t; }
+  async get(actor: Actor, id: string) {
+    const t=await this.task(this.db.manager,actor,id);
+    await this.canRead(this.db.manager,actor,t);
+    const files=await this.db.manager.query(
+      `SELECT id,file_name,mime_type,file_size,created_at
+       FROM public.task_result_files WHERE task_id=$1 ORDER BY created_at DESC`,
+      [id],
+    );
+    return {
+      ...t,
+      resultFiles: files.map((file: {
+        id: string;
+        file_name: string;
+        mime_type: string;
+        file_size: string;
+        created_at: Date;
+      }) => ({
+        id: file.id,
+        fileName: file.file_name,
+        mimeType: file.mime_type,
+        fileSize: file.file_size,
+        createdAt: file.created_at,
+        downloadUrl: `/api/tasks/${id}/result-files/${file.id}/download`,
+      })),
+    };
+  }
+  async resultFile(actor: Actor, taskId: string, fileId: string) {
+    await this.get(actor, taskId);
+    const rows = await this.db.manager.query(
+      `SELECT id,file_name,storage_key,mime_type,file_size
+       FROM public.task_result_files WHERE id=$1 AND task_id=$2`,
+      [fileId, taskId],
+    );
+    if (!rows.length) throw new NotFoundException('Task result file not found');
+    return rows[0];
+  }
   private async buildFilters(actor: Actor, q: Partial<QueryTasksDto>, mine=false) {
     const params:any[]=[this.org(actor),actor.id];
     const visibility = [

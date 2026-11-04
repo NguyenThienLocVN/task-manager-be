@@ -1,11 +1,15 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { DataSource, EntityManager } from 'typeorm';
+import { randomUUID } from 'node:crypto';
+import { unlink } from 'node:fs/promises';
+import { deleteStoredFile, persistFile } from '../../documents/file-storage';
 import { DelegateTaskDto, ReviewTaskDto, RouteTaskDto, SubmitTaskDto } from './workflow.dto';
 import { notifyUsers, NotificationType } from '../../notifications/notification.helper';
 import { TaskSecurityService, type TaskActor as Actor } from '../security/task-security.service';
 @Injectable()
 export class WorkflowService {
  constructor(private readonly db:DataSource, private readonly security:TaskSecurityService){}
+ private readonly logger = new Logger(WorkflowService.name);
  private org(a:Actor){if(!a?.id||!a.organizationId) throw new ForbiddenException('Missing identity / organization');return a.organizationId;}
  private async task(m:EntityManager,a:Actor,id:string){
   const rows=await m.query('SELECT * FROM public.tasks WHERE id=$1 AND organization_id=$2 FOR UPDATE',[id,this.org(a)]);
@@ -60,7 +64,19 @@ export class WorkflowService {
   if(dto.routeType==='DIRECT')await m.query(`INSERT INTO public.task_assignments(task_id,user_id,assignment_type,assigned_by,assigned_at,note,is_active)
    VALUES($1,$2,'MAIN',$3,now(),$4,true)`,[id,dto.assigneeId,a.id,dto.note??null]);
   await this.history(m,id,a.id,'ROUTE',t.status,dto.routeType+':'+dto.departmentId+':'+(dto.assigneeId??''));
-  const recipients=dto.routeType==='DIRECT'?[dto.assigneeId]:(await m.query('SELECT user_id FROM public.task_department_managers WHERE department_id=$1 AND is_active=true',[dto.departmentId])).map((r:any)=>r.user_id);
+  const recipients=dto.routeType==='DIRECT'?[dto.assigneeId]:(await m.query(`SELECT dm.user_id
+   FROM public.task_department_managers dm
+   JOIN public.departments d ON d.id=dm.department_id
+   WHERE dm.department_id=$1 AND dm.is_active=true AND d.organization_id=$2
+   UNION
+   SELECT u.id AS user_id
+   FROM public.users u
+   JOIN public.departments d ON d.id=u.department_id
+   JOIN public.user_roles ur ON ur.user_id=u.id
+   JOIN public.roles r ON r.id=ur.role_id
+   WHERE d.id=$1 AND d.organization_id=$2 AND d.is_active=true
+   AND u.organization_id=d.organization_id AND u.is_active=true AND u.is_locked=false
+   AND r.code='LANH_DAO_PHONG' AND r.is_active=true`,[dto.departmentId,this.org(a)])).map((r:any)=>r.user_id);
   await notifyUsers(m,{actorId:a.id,taskId:id,recipientIds:recipients,type:NotificationType.TASK_ROUTED,title:'Bạn được giao công việc mới',content:t.title+(dto.note?': '+dto.note:'')});
   return rows[0];
  });}
@@ -87,15 +103,47 @@ export class WorkflowService {
   await notifyUsers(m,{actorId:a.id,taskId:id,recipientIds:[dto.assigneeId],type:NotificationType.TASK_DELEGATED,title:'Bạn được phân công công việc',content:t.title+(dto.note?': '+dto.note:'')});
   return {taskId:id,responsibleUserId:dto.assigneeId};
  });}
- async submit(a:Actor,id:string,dto:SubmitTaskDto){return this.db.transaction(async m=>{
-  const t=await this.task(m,a,id);const r=await this.activeRoute(m,id);
-  if(!r||r.route_status!=='ACCEPTED'||t.responsible_user_id!==a.id)throw new ForbiddenException('Only accepted responsible user can submit');
-  if(!['ASSIGNED','IN_PROGRESS'].includes(t.status))throw new BadRequestException('Invalid task status');
-  await m.query(`UPDATE public.tasks SET status='PENDING_REVIEW',result=COALESCE($2,result),updated_at=now() WHERE id=$1`,[id,dto.result??null]);
-  await this.history(m,id,a.id,'SUBMIT_REVIEW',t.status,'PENDING_REVIEW');
-  await notifyUsers(m,{actorId:a.id,taskId:id,recipientIds:[t.created_by,t.assigned_by],type:NotificationType.TASK_SUBMITTED,title:'Công việc chờ duyệt',content:t.title});
-  return {status:'PENDING_REVIEW'};
- });}
+ async submit(a:Actor,id:string,dto:SubmitTaskDto,file?:Express.Multer.File){
+  let stored: Awaited<ReturnType<typeof persistFile>> | undefined;
+  let previousStorageKey: string | undefined;
+  try {
+   const result=await this.db.transaction(async m=>{
+    const t=await this.task(m,a,id);const r=await this.activeRoute(m,id);
+    if(!r||r.route_status!=='ACCEPTED'||t.responsible_user_id!==a.id)throw new ForbiddenException('Only accepted responsible user can submit');
+    if(!['ASSIGNED','IN_PROGRESS'].includes(t.status))throw new BadRequestException('Invalid task status');
+    if(file){
+     stored=await persistFile(file);
+     const previous=await m.query(
+      'DELETE FROM public.task_result_files WHERE task_id=$1 RETURNING storage_key',[id],
+     );
+     previousStorageKey=previous[0]?.storage_key;
+     await m.query(
+      `INSERT INTO public.task_result_files
+       (id,task_id,uploaded_by,file_name,storage_key,mime_type,file_size,created_at)
+       VALUES($1,$2,$3,$4,$5,$6,$7,NOW())`,
+      [randomUUID(),id,a.id,stored.name,stored.key,stored.mime,stored.size],
+     );
+    }
+    await m.query(`UPDATE public.tasks SET status='PENDING_REVIEW',result=COALESCE($2,result),updated_at=now() WHERE id=$1`,[id,dto.result??null]);
+    await this.history(m,id,a.id,'SUBMIT_REVIEW',t.status,'PENDING_REVIEW');
+    await notifyUsers(m,{actorId:a.id,taskId:id,recipientIds:[t.created_by,t.assigned_by],type:NotificationType.TASK_SUBMITTED,title:'Công việc chờ duyệt',content:t.title});
+    return {status:'PENDING_REVIEW'};
+   });
+   if(previousStorageKey){
+    await deleteStoredFile(previousStorageKey).catch(()=>{
+     this.logger.warn('Unable to remove the replaced task result file');
+    });
+   }
+   return result;
+  } catch(error) {
+   if(stored) await deleteStoredFile(stored.key);
+   throw error;
+  } finally {
+   if(file) await unlink(file.path).catch((error:NodeJS.ErrnoException)=>{
+    if(error.code!=='ENOENT') throw error;
+   });
+  }
+ }
  async review(a:Actor,id:string,dto:ReviewTaskDto){return this.db.transaction(async m=>{
   const t=await this.task(m,a,id);
   const canReview=this.issuer(a,t)

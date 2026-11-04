@@ -1,11 +1,15 @@
 import {
-  Body, Controller, ForbiddenException, Get, Param, ParseUUIDPipe,
-  Post, UseGuards,
+  Body, Controller, ForbiddenException, Get, Param, ParseUUIDPipe, Res,
+  Post, StreamableFile, UploadedFile, UseGuards, UseInterceptors,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import type { Response } from 'express';
 import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../../auth/decorators/current-user.decorator';
 import type { AuthUser } from '../../auth/interfaces/auth-user.interface';
+import { multerOptions, openStoredFile } from '../../documents/file-storage';
 import { TaskSecurityService } from '../security/task-security.service';
+import { TasksService } from '../tasks.service';
 import { WorkflowService } from './workflow.service';
 import {
   DelegateTaskDto, ReviewTaskDto, RouteTaskDto, SubmitTaskDto,
@@ -21,6 +25,7 @@ export class WorkflowController {
   constructor(
     private readonly service: WorkflowService,
     private readonly security: TaskSecurityService,
+    private readonly tasks: TasksService,
   ) {}
 
   private async authorize(user: AuthUser, permission: string) {
@@ -79,12 +84,36 @@ export class WorkflowController {
   }
 
   @Post(':id/submit-review')
+  @UseInterceptors(FileInterceptor('file', multerOptions))
   async submit(
     @CurrentUser() user: AuthUser,
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: SubmitTaskDto,
+    @UploadedFile() file?: Express.Multer.File,
   ) {
-    return this.service.submit(await this.authorize(user, 'TASK_SUBMIT'), id, dto);
+    return this.service.submit(await this.authorize(user, 'TASK_SUBMIT'), id, dto, file);
+  }
+
+  @Get(':id/result-files/:fileId/download')
+  async downloadResultFile(
+    @CurrentUser() user: AuthUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('fileId', ParseUUIDPipe) fileId: string,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<StreamableFile> {
+    const file = await this.tasks.resultFile(
+      await this.authorizeAny(user, TASK_VIEW_PERMISSIONS),
+      id,
+      fileId,
+    );
+    const { stream, length } = await openStoredFile(file.storage_key);
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="result-file"; filename*=UTF-8''${encodeURIComponent(file.file_name)}`,
+    );
+    return new StreamableFile(stream, { type: file.mime_type, length });
   }
 
   @Post(':id/review')

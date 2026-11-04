@@ -94,3 +94,91 @@ describe('WorkflowService department acceptance', () => {
     );
   });
 });
+
+describe('WorkflowService department route notifications', () => {
+  const actor: TaskActor = {
+    id: 'issuer-id',
+    organizationId: 'organization-id',
+    departmentId: 'issuer-department-id',
+    roles: ['LANH_DAO_CO_QUAN'],
+  };
+  const task = {
+    id: 'task-id',
+    organization_id: actor.organizationId,
+    created_by: actor.id,
+    assigned_by: actor.id,
+    status: 'NEW',
+    title: 'Văn bản cần xử lý',
+  };
+
+  it('notifies department managers and active LANH_DAO_PHONG users on department routing', async () => {
+    const managerRows = [{ user_id: 'mapped-manager-id' }, { user_id: 'department-leader-id' }];
+    const query = vi.fn(async (sql: string) => {
+      if (sql.includes('FROM public.tasks WHERE')) return [task];
+      if (sql.includes('FROM public.task_workflow_routes WHERE')) return [];
+      if (sql.includes('FROM public.departments WHERE')) return [{ id: 'department-id' }];
+      if (sql.includes('INSERT INTO public.task_workflow_routes')) return [{ id: 'route-id' }];
+      if (sql.includes('FROM public.task_department_managers dm')) return managerRows;
+      return [];
+    });
+    const db = {
+      transaction: vi.fn(async (callback: (manager: EntityManager) => Promise<unknown>) =>
+        callback({ query } as unknown as EntityManager),
+      ),
+    };
+    const service = new WorkflowService(
+      db as unknown as DataSource,
+      {} as TaskSecurityService,
+    );
+
+    await service.route(actor, task.id, {
+      routeType: 'DEPARTMENT',
+      departmentId: 'department-id',
+    });
+
+    const recipientQuery = query.mock.calls.find(([sql]) =>
+      sql.includes('FROM public.task_department_managers dm'),
+    );
+    expect(recipientQuery?.[0]).toContain("r.code='LANH_DAO_PHONG'");
+    expect(recipientQuery?.[1]).toEqual(['department-id', actor.organizationId]);
+
+    const notificationQuery = query.mock.calls.find(([sql]) =>
+      sql.includes('INSERT INTO public.notifications'),
+    );
+    expect(notificationQuery?.[1]?.[0]).toEqual(
+      expect.arrayContaining(['mapped-manager-id', 'department-leader-id']),
+    );
+  });
+
+  it('notifies the selected specialist on direct routing', async () => {
+    const assigneeId = 'specialist-id';
+    const query = vi.fn(async (sql: string, _params?: unknown[]) => {
+      if (sql.includes('FROM public.tasks WHERE')) return [task];
+      if (sql.includes('FROM public.task_workflow_routes WHERE')) return [];
+      if (sql.includes('FROM public.departments WHERE')) return [{ id: 'department-id' }];
+      if (sql.includes('FROM public.users WHERE id=$1')) return [{ id: assigneeId }];
+      if (sql.includes('INSERT INTO public.task_workflow_routes')) return [{ id: 'route-id' }];
+      return [];
+    });
+    const db = {
+      transaction: vi.fn(async (callback: (manager: EntityManager) => Promise<unknown>) =>
+        callback({ query } as unknown as EntityManager),
+      ),
+    };
+    const service = new WorkflowService(
+      db as unknown as DataSource,
+      {} as TaskSecurityService,
+    );
+
+    await service.route(actor, task.id, {
+      routeType: 'DIRECT',
+      departmentId: 'department-id',
+      assigneeId,
+    });
+
+    const notificationQuery = query.mock.calls.find(([sql]) =>
+      sql.includes('INSERT INTO public.notifications'),
+    );
+    expect(notificationQuery?.[1]?.[0]).toEqual([assigneeId]);
+  });
+});
