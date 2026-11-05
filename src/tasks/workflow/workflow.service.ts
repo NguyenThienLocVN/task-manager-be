@@ -160,13 +160,18 @@ export class WorkflowService {
   return {status,decision:dto.decision};
  });}
  async routes(a:Actor,id:string){
-  const t=await this.db.query('SELECT * FROM public.tasks WHERE id=$1 AND organization_id=$2',[id,this.org(a)]);
+  const canViewAll=await this.security.hasAnyPermission(a,['TASK_VIEW_ALL']);
+  const t=canViewAll
+   ?await this.db.query('SELECT * FROM public.tasks WHERE id=$1',[id])
+   :await this.db.query('SELECT * FROM public.tasks WHERE id=$1 AND organization_id=$2',[id,this.org(a)]);
   if(!t.length)throw new NotFoundException();
-  const row=t[0];const participant=row.created_by===a.id||row.assigned_by===a.id||row.responsible_user_id===a.id;
-  const assigned=await this.db.query('SELECT 1 FROM public.task_assignments WHERE task_id=$1 AND user_id=$2 AND is_active=true',[id,a.id]);
-  const manager=row.department_id ? await this.isDeptManager(this.db.manager,a,row.department_id):false;
-  const departmentViewer=await this.security.canViewDepartment(a,row.department_id);
-  if(!participant&&!assigned.length&&!manager&&!departmentViewer)throw new ForbiddenException();
+  if(!canViewAll){
+   const row=t[0];const participant=row.created_by===a.id||row.assigned_by===a.id||row.responsible_user_id===a.id;
+   const assigned=await this.db.query('SELECT 1 FROM public.task_assignments WHERE task_id=$1 AND user_id=$2 AND is_active=true',[id,a.id]);
+   const manager=row.department_id ? await this.isDeptManager(this.db.manager,a,row.department_id):false;
+   const departmentViewer=await this.security.canViewDepartment(a,row.department_id);
+   if(!participant&&!assigned.length&&!manager&&!departmentViewer)throw new ForbiddenException();
+  }
   return this.db.query('SELECT * FROM public.task_workflow_routes WHERE task_id=$1 ORDER BY issued_at DESC',[id]);
  }
  async inbox(a:Actor){

@@ -1,6 +1,7 @@
 import { DataSource } from 'typeorm';
 import { TaskSecurityService, type TaskActor } from './security/task-security.service';
 import { TasksService } from './tasks.service';
+import { MailService } from '../mail/mail.service';
 
 describe('TasksService department visibility', () => {
   const actor: TaskActor = {
@@ -9,6 +10,10 @@ describe('TasksService department visibility', () => {
     departmentId: 'department-id',
     roles: ['LANH_DAO_PHONG'],
   };
+  const createService = (db: DataSource, security: TaskSecurityService) =>
+    new TasksService(db, security, {
+      sendTaskReminder: vi.fn().mockResolvedValue(undefined),
+    } as unknown as MailService);
 
   it('allows department viewers to read assignments for tasks in their department', async () => {
     const task = {
@@ -28,9 +33,10 @@ describe('TasksService department visibility', () => {
       manager: { query: managerQuery },
     } as unknown as DataSource;
     const security = {
+      hasAnyPermission: vi.fn().mockResolvedValue(false),
       canViewDepartment: vi.fn().mockResolvedValue(true),
     } as unknown as TaskSecurityService;
-    const service = new TasksService(db, security);
+    const service = createService(db, security);
 
     await expect(service.get(actor, task.id)).resolves.toEqual({
       ...task,
@@ -64,9 +70,10 @@ describe('TasksService department visibility', () => {
       manager: { query: managerQuery },
     } as unknown as DataSource;
     const security = {
+      hasAnyPermission: vi.fn().mockResolvedValue(false),
       canViewDepartment: vi.fn().mockResolvedValue(false),
     } as unknown as TaskSecurityService;
-    const service = new TasksService(db, security);
+    const service = createService(db, security);
 
     await expect(service.get(actor, task.id)).resolves.toMatchObject({
       resultFiles: [{
@@ -85,9 +92,10 @@ describe('TasksService department visibility', () => {
       .mockResolvedValueOnce([{ id: 'task-id', document_id: 'document-id' }]);
     const db = { query } as unknown as DataSource;
     const security = {
+      hasAnyPermission: vi.fn().mockResolvedValue(false),
       canViewDepartment: vi.fn().mockResolvedValue(false),
     } as unknown as TaskSecurityService;
-    const service = new TasksService(db, security);
+    const service = createService(db, security);
 
     await service.list(actor, { documentId: 'document-id' });
 
@@ -106,9 +114,10 @@ describe('TasksService department visibility', () => {
       .mockResolvedValueOnce([{ id: 'task-id' }]);
     const db = { query } as unknown as DataSource;
     const security = {
+      hasAnyPermission: vi.fn().mockResolvedValue(false),
       canViewDepartment: vi.fn().mockResolvedValue(true),
     } as unknown as TaskSecurityService;
-    const service = new TasksService(db, security);
+    const service = createService(db, security);
 
     await service.list(actor, {});
 
@@ -118,5 +127,64 @@ describe('TasksService department visibility', () => {
       actor.id,
       actor.departmentId,
     ]);
+  });
+
+  it('lets TASK_VIEW_ALL users list tasks across organizations', async () => {
+    const query = vi.fn()
+      .mockResolvedValueOnce([{ total: 10 }])
+      .mockResolvedValueOnce([{ id: 'task-id' }]);
+    const db = { query } as unknown as DataSource;
+    const security = {
+      hasAnyPermission: vi.fn().mockResolvedValue(true),
+      canViewDepartment: vi.fn(),
+    } as unknown as TaskSecurityService;
+    const service = createService(db, security);
+
+    await service.list(actor, {});
+
+    expect(query.mock.calls[0][0]).toContain('WHERE TRUE');
+    expect(query.mock.calls[0][0]).not.toContain('organization_id=$1');
+    expect(query.mock.calls[0][1]).toEqual([]);
+    expect(security.canViewDepartment).not.toHaveBeenCalled();
+  });
+
+  it('does not restrict TASK_VIEW_ALL users to their own tasks on my-tasks', async () => {
+    const query = vi.fn()
+      .mockResolvedValueOnce([{ total: 10 }])
+      .mockResolvedValueOnce([{ id: 'task-id' }]);
+    const db = { query } as unknown as DataSource;
+    const security = {
+      hasAnyPermission: vi.fn().mockResolvedValue(true),
+      canViewDepartment: vi.fn(),
+    } as unknown as TaskSecurityService;
+    const service = createService(db, security);
+
+    await service.list(actor, {}, true);
+
+    expect(query.mock.calls[0][0]).toContain('WHERE TRUE');
+    expect(query.mock.calls[0][0]).not.toContain('responsible_user_id');
+    expect(query.mock.calls[0][1]).toEqual([]);
+  });
+
+  it('lets TASK_VIEW_ALL users read a task outside their organization', async () => {
+    const task = {
+      id: 'task-id',
+      organization_id: 'another-organization',
+      department_id: null,
+    };
+    const managerQuery = vi.fn()
+      .mockResolvedValueOnce([task])
+      .mockResolvedValueOnce([]);
+    const db = {
+      manager: { query: managerQuery },
+    } as unknown as DataSource;
+    const security = {
+      hasAnyPermission: vi.fn().mockResolvedValue(true),
+    } as unknown as TaskSecurityService;
+    const service = createService(db, security);
+
+    await expect(service.get(actor, task.id)).resolves.toMatchObject(task);
+    expect(managerQuery.mock.calls[0][0]).toBe('SELECT * FROM public.tasks WHERE id=$1');
+    expect(managerQuery.mock.calls[0][1]).toEqual([task.id]);
   });
 });

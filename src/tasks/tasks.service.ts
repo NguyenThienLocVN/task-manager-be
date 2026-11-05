@@ -4,6 +4,7 @@ import { CommentDto, CreateTaskDto, ProgressDto, QueryTasksDto, UpdateTaskDto } 
 import type { TaskActor as Actor } from './security/task-security.service';
 import { notifyUsers, NotificationType } from '../notifications/notification.helper';
 import { TaskSecurityService } from './security/task-security.service';
+import { MailService } from '../mail/mail.service';
 
 
 const editable = new Set(['title','description','task_code','document_id','plan_id','start_date','due_date','priority','is_important','is_confidential']);
@@ -14,6 +15,7 @@ export class TasksService {
   constructor(
     private readonly db: DataSource,
     private readonly security: TaskSecurityService,
+    private readonly mail: MailService,
   ) {}
   private org(actor: Actor) {
     // Fail closed: never silently remove tenancy restrictions for missing JWT claims.
@@ -24,6 +26,9 @@ export class TasksService {
     const rows = await manager.query(`SELECT * FROM public.tasks WHERE id=$1 AND organization_id=$2 ${lock ? 'FOR UPDATE' : ''}`, [id, this.org(actor)]);
     if (!rows.length) throw new NotFoundException('Task not found in your organization');
     return rows[0];
+  }
+  private canViewAllTasks(actor: Actor) {
+    return this.security.hasAnyPermission(actor, ['TASK_VIEW_ALL']);
   }
   private async canRead(m: EntityManager, actor: Actor, task: any): Promise<void> {
     if (task.organization_id !== this.org(actor)) throw new ForbiddenException();
@@ -49,8 +54,19 @@ export class TasksService {
     });
   }
   async get(actor: Actor, id: string) {
-    const t=await this.task(this.db.manager,actor,id);
-    await this.canRead(this.db.manager,actor,t);
+    const canViewAll = await this.canViewAllTasks(actor);
+    let t: any;
+    if (canViewAll) {
+      const rows = await this.db.manager.query(
+        'SELECT * FROM public.tasks WHERE id=$1',
+        [id],
+      );
+      if (!rows.length) throw new NotFoundException('Task not found');
+      t = rows[0];
+    } else {
+      t = await this.task(this.db.manager, actor, id);
+      await this.canRead(this.db.manager, actor, t);
+    }
     const files=await this.db.manager.query(
       `SELECT id,file_name,mime_type,file_size,created_at
        FROM public.task_result_files WHERE task_id=$1 ORDER BY created_at DESC`,
@@ -74,6 +90,30 @@ export class TasksService {
       })),
     };
   }
+  async sendReminder(actor: Actor, id: string) {
+    const task = await this.task(this.db.manager, actor, id);
+    await this.canRead(this.db.manager, actor, task);
+
+    if (!task.responsible_user_id) {
+      throw new BadRequestException('Task has no responsible user');
+    }
+
+    const recipients = await this.db.query(
+      `SELECT email FROM public.users
+       WHERE id=$1 AND organization_id=$2 AND is_active=true`,
+      [task.responsible_user_id, this.org(actor)],
+    );
+    const email = recipients[0]?.email;
+    if (!email) {
+      throw new BadRequestException('Responsible user has no email address');
+    }
+
+    await this.mail.sendTaskReminder(email, {
+      title: task.title,
+      dueDate: task.due_date ?? undefined,
+    });
+    return { sent: true };
+  }
   async resultFile(actor: Actor, taskId: string, fileId: string) {
     await this.get(actor, taskId);
     const rows = await this.db.manager.query(
@@ -85,22 +125,30 @@ export class TasksService {
     return rows[0];
   }
   private async buildFilters(actor: Actor, q: Partial<QueryTasksDto>, mine=false) {
-    const params:any[]=[this.org(actor),actor.id];
-    const visibility = [
+    const canViewAll = await this.canViewAllTasks(actor);
+    const params:any[] = canViewAll ? [] : [this.org(actor), actor.id];
+    const visibility = canViewAll ? [] : [
       't.created_by=$2',
       't.assigned_by=$2',
       't.responsible_user_id=$2',
       'EXISTS(SELECT 1 FROM public.task_assignments a WHERE a.task_id=t.id AND a.user_id=$2 AND a.is_active=true)',
       'EXISTS(SELECT 1 FROM public.task_department_managers dm WHERE dm.department_id=t.department_id AND dm.user_id=$2 AND dm.is_active=true)',
     ];
-    if (await this.security.canViewDepartment(actor, actor.departmentId)) {
+    if (!canViewAll && await this.security.canViewDepartment(actor, actor.departmentId)) {
       params.push(actor.departmentId);
       visibility.push(`t.department_id=$${params.length}`);
     }
-    const filters=[`t.organization_id=$1`, `(${visibility.join(' OR ')})`];
-    if (q.organizationId && q.organizationId!==actor.organizationId) throw new ForbiddenException();
+    const filters = canViewAll
+      ? []
+      : [`t.organization_id=$1`, `(${visibility.join(' OR ')})`];
     const add=(field:string,value:unknown)=>{params.push(value);filters.push(`${field}=$${params.length}`)};
-    
+
+    if (q.organizationId) {
+      if (!canViewAll && q.organizationId !== actor.organizationId) {
+        throw new ForbiddenException();
+      }
+      if (canViewAll) add('t.organization_id', q.organizationId);
+    }
     if(q.documentId) add('t.document_id',q.documentId);
     if(q.responsibleUserId) add('t.responsible_user_id',q.responsibleUserId);
     if(q.status) add('t.status',q.status);
@@ -115,8 +163,12 @@ export class TasksService {
     addCmp('t.due_date','<=',q.dueDateTo);
     if(q.search){params.push('%'+q.search+'%');filters.push(`(t.title ILIKE $${params.length} OR t.task_code ILIKE $${params.length})`);}
     if(q.overdue==='true') filters.push(`t.due_date < CURRENT_DATE AND t.status NOT IN ('COMPLETED','CANCELLED')`);
-    if(mine) filters.push(`(t.responsible_user_id=$2 OR EXISTS(SELECT 1 FROM public.task_assignments a WHERE a.task_id=t.id AND a.user_id=$2 AND a.is_active=true))`);
-    return {where:filters.join(' AND '),params};
+    if(mine && !canViewAll) {
+      params.push(actor.id);
+      const actorParam = `$${params.length}`;
+      filters.push(`(t.responsible_user_id=${actorParam} OR EXISTS(SELECT 1 FROM public.task_assignments a WHERE a.task_id=t.id AND a.user_id=${actorParam} AND a.is_active=true))`);
+    }
+    return {where:filters.length ? filters.join(' AND ') : 'TRUE',params};
   }
   async list(actor: Actor, q: QueryTasksDto, mine=false) {
     const {where,params}=await this.buildFilters(actor,q,mine);
@@ -172,7 +224,15 @@ export class TasksService {
     });
   }
   async subtasks(actor:Actor,id:string) {
-    await this.get(actor,id);
+    const parent = await this.get(actor,id);
+    if (await this.canViewAllTasks(actor)) {
+      return this.db.query(
+        `SELECT t.* FROM public.tasks t
+         WHERE t.parent_task_id=$1 AND t.organization_id=$2
+         ORDER BY t.created_at DESC LIMIT 100`,
+        [id, parent.organization_id],
+      );
+    }
     const params: unknown[] = [id, actor.organizationId, actor.id];
     let departmentScope = '';
     if (await this.security.canViewDepartment(actor, actor.departmentId)) {
@@ -194,7 +254,8 @@ export class TasksService {
     });
   }
   async comment(actor:Actor,id:string,dto:CommentDto) {
-    const t=await this.get(actor,id);
+    const t=await this.task(this.db.manager,actor,id);
+    await this.canRead(this.db.manager,actor,t);
     if(dto.parentCommentId) {
       const exists=await this.db.query('SELECT 1 FROM public.task_comments WHERE id=$1 AND task_id=$2',[dto.parentCommentId,id]);
       if(!exists.length) throw new BadRequestException('Parent comment not in task');

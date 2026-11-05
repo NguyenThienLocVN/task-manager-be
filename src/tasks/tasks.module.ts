@@ -6,8 +6,9 @@ import { TasksService } from './tasks.service';
 import { WorkflowService } from './workflow/workflow.service';
 import { WorkflowController } from './workflow/workflow.controller';
 import { TaskSecurityService } from './security/task-security.service';
+import { MailModule } from '../mail/mail.module';
 @Module({
-  imports: [JwtModule.register({})],
+  imports: [JwtModule.register({}), MailModule],
   controllers: [TasksController, WorkflowController],
   providers: [JwtAuthGuard, TaskSecurityService, TasksService, WorkflowService],
   exports: [JwtAuthGuard, TaskSecurityService],

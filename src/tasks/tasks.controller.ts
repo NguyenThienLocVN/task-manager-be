@@ -142,4 +142,10 @@ export class TasksController {
   async history(@CurrentUser() user: AuthUser, @Param('id', ParseUUIDPipe) id: string) {
     return this.service.children(await this.authorizeAny(user, TASK_VIEW_PERMISSIONS), id, 'task_history');
   }
+
+  @Post(':id/remind')
+  async remind(@CurrentUser() user: AuthUser, @Param('id', ParseUUIDPipe) id: string) {
+    const actor = await this.authorizeAny(user, TASK_VIEW_PERMISSIONS);
+    return this.service.sendReminder(actor, id);
+  }
 }
