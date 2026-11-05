@@ -5,6 +5,7 @@ import type { TaskActor as Actor } from './security/task-security.service';
 import { notifyUsers, NotificationType } from '../notifications/notification.helper';
 import { TaskSecurityService } from './security/task-security.service';
 import { MailService } from '../mail/mail.service';
+import { deleteStoredFile } from '../documents/file-storage';
 
 
 const editable = new Set(['title','description','task_code','document_id','plan_id','start_date','due_date','priority','is_important','is_confidential']);
@@ -189,7 +190,7 @@ export class TasksService {
     });
   }
   async delete(actor: Actor, id: string) {
-    return this.db.transaction(async m => {
+    const deleted = await this.db.transaction(async m => {
       const root = await this.task(m, actor, id, true);
       this.assertManager(actor, root);
 
@@ -218,10 +219,19 @@ export class TasksService {
       await m.query('DELETE FROM public.task_progress WHERE task_id=ANY($1::uuid[])', [taskIds]);
       await m.query('DELETE FROM public.task_comments WHERE task_id=ANY($1::uuid[])', [taskIds]);
       await m.query('DELETE FROM public.task_history WHERE task_id=ANY($1::uuid[])', [taskIds]);
+      await m.query('DELETE FROM public.notifications WHERE task_id=ANY($1::uuid[])', [taskIds]);
+      const files = await m.query(
+        'DELETE FROM public.task_result_files WHERE task_id=ANY($1::uuid[]) RETURNING storage_key',
+        [taskIds],
+      );
       await m.query('DELETE FROM public.tasks WHERE id=ANY($1::uuid[])', [taskIds]);
 
-      return { deleted: true, id, deletedCount: taskIds.length };
+      return { files, result: { deleted: true, id, deletedCount: taskIds.length } };
     });
+    await Promise.all(
+      deleted.files.map((f: { storage_key: string }) => deleteStoredFile(f.storage_key).catch(() => undefined)),
+    );
+    return deleted.result;
   }
   async subtasks(actor:Actor,id:string) {
     const parent = await this.get(actor,id);
