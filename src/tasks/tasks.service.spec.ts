@@ -3,7 +3,7 @@ import { TaskSecurityService, type TaskActor } from './security/task-security.se
 import { TasksService } from './tasks.service';
 import { MailService } from '../mail/mail.service';
 
-describe('TasksService department visibility', () => {
+describe('TasksService', () => {
   const actor: TaskActor = {
     id: 'user-id',
     organizationId: 'organization-id',
@@ -83,6 +83,59 @@ describe('TasksService department visibility', () => {
         fileSize: file.file_size,
         downloadUrl: `/api/tasks/${task.id}/result-files/${file.id}/download`,
       }],
+    });
+  });
+
+  describe('TasksService comment notifications', () => {
+    it('includes the comment author name in the notification content', async () => {
+      const actor: TaskActor = {
+        id: 'commenter-id',
+        organizationId: 'organization-id',
+        departmentId: 'department-id',
+        roles: [],
+      };
+      const task = {
+        id: 'task-id',
+        organization_id: actor.organizationId,
+        department_id: actor.departmentId,
+        created_by: 'recipient-id',
+        assigned_by: 'recipient-id',
+        responsible_user_id: actor.id,
+      };
+      const notificationContent = 'Nội dung bình luận';
+      const managerQuery = vi.fn(async (sql: string) => {
+        if (sql.includes('FROM public.tasks WHERE')) return [task];
+        return [];
+      });
+      const transactionQuery = vi.fn(async (sql: string) => {
+        if (sql.includes('INSERT INTO public.task_comments')) {
+          return [{ id: 'comment-id' }];
+        }
+        if (sql.includes('SELECT full_name FROM public.users')) {
+          return [{ full_name: 'Nguyễn Văn A' }];
+        }
+        return [];
+      });
+      const db = {
+        manager: { query: managerQuery },
+        transaction: vi.fn(
+          async (callback: (manager: { query: typeof transactionQuery }) => Promise<unknown>) =>
+            callback({ query: transactionQuery }),
+        ),
+      } as unknown as DataSource;
+      const security = {
+        canViewDepartment: vi.fn().mockResolvedValue(false),
+      } as unknown as TaskSecurityService;
+      const service = createService(db, security);
+
+      await service.comment(actor, task.id, { content: notificationContent });
+
+      const notificationQuery = transactionQuery.mock.calls.find(([sql]) =>
+        sql.includes('INSERT INTO public.notifications'),
+      );
+      expect(notificationQuery?.[1]?.[3]).toBe(
+        `Người bình luận: Nguyễn Văn A\n${notificationContent}`,
+      );
     });
   });
 

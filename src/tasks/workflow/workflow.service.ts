@@ -77,18 +77,26 @@ export class WorkflowService {
    WHERE d.id=$1 AND d.organization_id=$2 AND d.is_active=true
    AND u.organization_id=d.organization_id AND u.is_active=true AND u.is_locked=false
    AND r.code='LANH_DAO_PHONG' AND r.is_active=true`,[dto.departmentId,this.org(a)])).map((r:any)=>r.user_id);
-  await notifyUsers(m,{actorId:a.id,taskId:id,recipientIds:recipients,type:NotificationType.TASK_ROUTED,title:'Bạn được giao công việc mới',content:t.title+(dto.note?': '+dto.note:'')});
+  const issuers=await m.query('SELECT full_name FROM public.users WHERE id=$1 AND organization_id=$2',[a.id,this.org(a)]);
+  if(!issuers.length)throw new NotFoundException('Issuer not found');
+  const dueDate=t.due_date
+   ? new Intl.DateTimeFormat('vi-VN',{day:'2-digit',month:'2-digit',year:'numeric',timeZone:'UTC'}).format(new Date(t.due_date))
+   : 'Chưa có hạn chót';
+  const content=`${t.title}\n - Người giao: ${issuers[0].full_name}\n - Hạn chót: ${dueDate}`;
+  await notifyUsers(m,{actorId:a.id,taskId:id,recipientIds:recipients,type:NotificationType.TASK_ROUTED,title:'Bạn được giao công việc mới',content});
   return rows[0];
  });}
  async accept(a:Actor,id:string){return this.db.transaction(async m=>{
   const t=await this.task(m,a,id);const r=await this.activeRoute(m,id);
   if(!r || r.route_status!=='PENDING')throw new BadRequestException('No pending route');
   const allowed=r.route_type==='DIRECT'?r.assignee_id===a.id:await this.isDeptManager(m,a,r.department_id);
-  if(!allowed)throw new ForbiddenException('Only recipient can accept');
+  if(!allowed)throw new ForbiddenException('Vui lòng tiếp nhận công việc trước.');
   await m.query(`UPDATE public.task_workflow_routes SET route_status='ACCEPTED',accepted_by=$2,accepted_at=now() WHERE id=$1`,[r.id,a.id]);
   if(r.route_type==='DIRECT')await m.query(`UPDATE public.tasks SET status='IN_PROGRESS',updated_at=now() WHERE id=$1`,[id]);
   await this.history(m,id,a.id,'ACCEPT',r.route_type,'ACCEPTED');
-  await notifyUsers(m,{actorId:a.id,taskId:id,recipientIds:[t.created_by,t.assigned_by],type:NotificationType.TASK_ACCEPTED,title:'Công việc đã được tiếp nhận',content:t.title});
+  const acceptors=await m.query('SELECT full_name FROM public.users WHERE id=$1 AND organization_id=$2',[a.id,this.org(a)]);
+  if(!acceptors.length)throw new NotFoundException('Acceptor not found');
+  await notifyUsers(m,{actorId:a.id,taskId:id,recipientIds:[t.created_by,t.assigned_by],type:NotificationType.TASK_ACCEPTED,title:'Công việc đã được tiếp nhận',content:`${acceptors[0].full_name} đã tiếp nhận công việc: ${t.title}`});
   return {accepted:true,routeId:r.id};
  });}
  async delegate(a:Actor,id:string,dto:DelegateTaskDto){return this.db.transaction(async m=>{
@@ -126,7 +134,9 @@ export class WorkflowService {
     }
     await m.query(`UPDATE public.tasks SET status='PENDING_REVIEW',result=COALESCE($2,result),updated_at=now() WHERE id=$1`,[id,dto.result??null]);
     await this.history(m,id,a.id,'SUBMIT_REVIEW',t.status,'PENDING_REVIEW');
-    await notifyUsers(m,{actorId:a.id,taskId:id,recipientIds:[t.created_by,t.assigned_by],type:NotificationType.TASK_SUBMITTED,title:'Công việc chờ duyệt',content:t.title});
+    const submitters=await m.query('SELECT full_name FROM public.users WHERE id=$1 AND organization_id=$2',[a.id,this.org(a)]);
+    if(!submitters.length)throw new NotFoundException('Submitter not found');
+    await notifyUsers(m,{actorId:a.id,taskId:id,recipientIds:[t.created_by,t.assigned_by],type:NotificationType.TASK_SUBMITTED,title:'Công việc chờ duyệt',content:`${submitters[0].full_name} trình gửi kết quả công việc: ${t.title}`});
     return {status:'PENDING_REVIEW'};
    });
    if(previousStorageKey){
@@ -154,9 +164,9 @@ export class WorkflowService {
   const status=dto.decision==='APPROVE'?'COMPLETED':'IN_PROGRESS';
   await m.query(`UPDATE public.tasks SET status=$2::varchar,progress_percent=CASE WHEN $2::varchar='COMPLETED' THEN 100 ELSE progress_percent END,
   completed_at=CASE WHEN $2::varchar='COMPLETED' THEN now() ELSE NULL END,updated_at=now() WHERE id=$1`,[id,status]);
-  await this.history(m,id,a.id,'REVIEW',t.status,status+(dto.comment?': '+dto.comment:''));
+  await this.history(m,id,a.id,dto.decision,t.status,status+(dto.comment?': '+dto.comment:''));
   await notifyUsers(m,{actorId:a.id,taskId:id,recipientIds:[t.responsible_user_id],type:dto.decision==='APPROVE'?NotificationType.TASK_APPROVED:NotificationType.TASK_REJECTED,
-   title:dto.decision==='APPROVE'?'Công việc đã được duyệt':'Công việc bị yêu cầu làm lại',content:t.title+(dto.comment?': '+dto.comment:'')});
+   title:dto.decision==='APPROVE'?'Công việc đã được duyệt':'Công việc bị yêu cầu làm lại',content:`Công việc: ${t.title} - Lời nhắn${dto.comment?': '+dto.comment:''}`});
   return {status,decision:dto.decision};
  });}
  async routes(a:Actor,id:string){

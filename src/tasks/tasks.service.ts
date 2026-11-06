@@ -273,8 +273,10 @@ export class TasksService {
     return this.db.transaction(async m=>{
       const rows=await m.query('INSERT INTO public.task_comments(task_id,user_id,parent_comment_id,content,created_at) VALUES($1,$2,$3,$4,NOW()) RETURNING *',[t.id,actor.id,dto.parentCommentId??null,dto.content]);
       const assignees=await m.query('SELECT user_id FROM public.task_assignments WHERE task_id=$1 AND is_active=true',[t.id]);
+      const commenters=await m.query('SELECT full_name FROM public.users WHERE id=$1 AND organization_id=$2',[actor.id,this.org(actor)]);
+      if(!commenters.length) throw new NotFoundException('Comment author not found');
       await notifyUsers(m,{actorId:actor.id,taskId:t.id,recipientIds:[t.created_by,t.assigned_by,t.responsible_user_id,...assignees.map((r:any)=>r.user_id)],
-        type:NotificationType.TASK_COMMENT,title:'Bình luận mới trong công việc',content:dto.content.slice(0,200)});
+        type:NotificationType.TASK_COMMENT,title:'Bình luận mới trong công việc',content:`${commenters[0].full_name}\n - Bình luận: ${dto.content.slice(0,200)}`});
       return rows[0];
     });
   }
