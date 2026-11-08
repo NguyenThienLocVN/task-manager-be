@@ -117,10 +117,10 @@ export class WorkflowService {
   try {
    const result=await this.db.transaction(async m=>{
     const t=await this.task(m,a,id);const r=await this.activeRoute(m,id);
-    if(!r||r.route_status!=='ACCEPTED'||t.responsible_user_id!==a.id)throw new ForbiddenException('Only accepted responsible user can submit');
+    if(!r||r.route_status!=='ACCEPTED'||t.responsible_user_id!==a.id)throw new ForbiddenException('Cần tiếp nhận công việc trước khi trình kết quả');
     if(!['ASSIGNED','IN_PROGRESS'].includes(t.status))throw new BadRequestException('Invalid task status');
     if(file){
-     stored=await persistFile(file);
+     stored=await persistFile(file, true);
      const previous=await m.query(
       'DELETE FROM public.task_result_files WHERE task_id=$1 RETURNING storage_key',[id],
      );
@@ -136,7 +136,7 @@ export class WorkflowService {
     await this.history(m,id,a.id,'SUBMIT_REVIEW',t.status,'PENDING_REVIEW');
     const submitters=await m.query('SELECT full_name FROM public.users WHERE id=$1 AND organization_id=$2',[a.id,this.org(a)]);
     if(!submitters.length)throw new NotFoundException('Submitter not found');
-    await notifyUsers(m,{actorId:a.id,taskId:id,recipientIds:[t.created_by,t.assigned_by],type:NotificationType.TASK_SUBMITTED,title:'Công việc chờ duyệt',content:`${submitters[0].full_name} trình gửi kết quả công việc: ${t.title}`});
+    await notifyUsers(m,{actorId:a.id,taskId:id,recipientIds:[t.created_by,t.assigned_by],type:NotificationType.TASK_SUBMITTED,title:'Công việc chờ duyệt',content:`${submitters[0].full_name} trình gửi kết quả công việc: ${t.title}${dto.result?`\nLời nhắn: ${dto.result}`:''}`});
     return {status:'PENDING_REVIEW'};
    });
    if(previousStorageKey){

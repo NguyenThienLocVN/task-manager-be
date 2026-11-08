@@ -1,5 +1,10 @@
 import { ForbiddenException } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
+import { unlink, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { Readable } from 'node:stream';
 import { DataSource, EntityManager } from 'typeorm';
+import { deleteStoredFile, TEMP_DIR } from '../../documents/file-storage';
 import { WorkflowService } from './workflow.service';
 import { TaskSecurityService, type TaskActor } from '../security/task-security.service';
 
@@ -207,7 +212,10 @@ describe('WorkflowService department route notifications', () => {
 });
 
 describe('WorkflowService submission notifications', () => {
-  it('includes the submitter name before the task title', async () => {
+  it.each([
+    [undefined, 'Nguyễn Văn C trình gửi kết quả công việc: Văn bản cần xử lý'],
+    ['Đã hoàn thành công việc', 'Nguyễn Văn C trình gửi kết quả công việc: Văn bản cần xử lý\nLời nhắn: Đã hoàn thành công việc'],
+  ])('includes the submitter name and optional result message', async (result, expectedContent) => {
     const actor: TaskActor = {
       id: 'specialist-id',
       organizationId: 'organization-id',
@@ -242,14 +250,65 @@ describe('WorkflowService submission notifications', () => {
       {} as TaskSecurityService,
     );
 
-    await service.submit(actor, task.id, {});
+    await service.submit(actor, task.id, { result });
 
     const notificationQuery = query.mock.calls.find(([sql]) =>
       sql.includes('INSERT INTO public.notifications'),
     );
-    expect(notificationQuery?.[1]?.[3]).toBe(
-      'Nguyễn Văn C trình gửi kết quả công việc: Văn bản cần xử lý',
+    expect(notificationQuery?.[1]?.[3]).toBe(expectedContent);
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining("UPDATE public.tasks SET status='PENDING_REVIEW'"),
+      [task.id, result ?? null],
     );
+  });
+
+  it('stores an Office file submitted for review', async () => {
+    const actor: TaskActor = {
+      id: 'specialist-id',
+      organizationId: 'organization-id',
+      departmentId: 'department-id',
+      roles: [],
+    };
+    const task = {
+      id: 'task-id', organization_id: actor.organizationId,
+      created_by: 'issuer-id', assigned_by: 'issuer-id',
+      responsible_user_id: actor.id, status: 'IN_PROGRESS', title: 'Công việc',
+    };
+    const query = vi.fn(async (sql: string) => {
+      if (sql.includes('FROM public.tasks WHERE')) return [task];
+      if (sql.includes('FROM public.task_workflow_routes')) return [{ route_status: 'ACCEPTED' }];
+      if (sql.includes('SELECT full_name FROM public.users')) return [{ full_name: 'Nguyễn Văn C' }];
+      return [];
+    });
+    const db = {
+      transaction: vi.fn(async (callback: (manager: EntityManager) => Promise<unknown>) =>
+        callback({ query } as unknown as EntityManager),
+      ),
+    };
+    const service = new WorkflowService(db as unknown as DataSource, {} as TaskSecurityService);
+    const bytes = Buffer.from('d0cf11e0a1b11ae10000000000000000', 'hex');
+    const path = join(TEMP_DIR, `${randomUUID()}.tmp`);
+    await writeFile(path, bytes);
+    const file: Express.Multer.File = {
+      fieldname: 'file', originalname: 'result.doc', encoding: '7bit',
+      mimetype: 'application/msword', size: bytes.length, path,
+      destination: TEMP_DIR, filename: '', buffer: Buffer.alloc(0),
+      stream: Readable.from(bytes),
+    };
+    try {
+      await expect(service.submit(actor, task.id, {}, file)).resolves.toEqual({ status: 'PENDING_REVIEW' });
+      const insert = query.mock.calls.find(([sql]) => sql.includes('INSERT INTO public.task_result_files'));
+      expect(insert?.[1]).toEqual([
+        expect.any(String), task.id, actor.id, 'result.doc',
+        expect.stringMatching(/\.doc$/), 'application/msword', String(bytes.length),
+      ]);
+    } finally {
+      const insert = query.mock.calls.find(([sql]) => sql.includes('INSERT INTO public.task_result_files'));
+      await deleteStoredFile(insert?.[1]?.[4]);
+      await unlink(path).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== 'ENOENT') throw error;
+      });
+    }
   });
 });
 
