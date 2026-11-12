@@ -95,25 +95,58 @@ export class TasksService {
     const task = await this.task(this.db.manager, actor, id);
     await this.canRead(this.db.manager, actor, task);
 
-    if (!task.responsible_user_id) {
-      throw new BadRequestException('Task has no responsible user');
+    let email: string | undefined;
+    try {
+      if (!task.responsible_user_id) {
+        throw new BadRequestException('Task has no responsible user');
+      }
+
+      const recipients = await this.db.query(
+        `SELECT email FROM public.users
+         WHERE id=$1 AND organization_id=$2 AND is_active=true`,
+        [task.responsible_user_id, this.org(actor)],
+      );
+      email = recipients[0]?.email;
+      if (!email) {
+        throw new BadRequestException('Responsible user has no email address');
+      }
+
+      await this.mail.sendTaskReminder(email, {
+        id: task.id,
+        title: task.title,
+        description: task.description ?? undefined,
+        dueDate: task.due_date
+          ? task.due_date instanceof Date
+            ? task.due_date.toISOString()
+            : String(task.due_date)
+          : undefined,
+      });
+    } catch (error) {
+      await this.recordReminderHistory(id, actor.id, {
+        status: 'FAILED',
+        recipientEmail: email ?? null,
+        error: error instanceof Error ? error.message : 'Không thể gửi email',
+      });
+      throw error;
     }
 
-    const recipients = await this.db.query(
-      `SELECT email FROM public.users
-       WHERE id=$1 AND organization_id=$2 AND is_active=true`,
-      [task.responsible_user_id, this.org(actor)],
-    );
-    const email = recipients[0]?.email;
-    if (!email) {
-      throw new BadRequestException('Responsible user has no email address');
-    }
-
-    await this.mail.sendTaskReminder(email, {
-      title: task.title,
-      dueDate: task.due_date ?? undefined,
+    await this.recordReminderHistory(id, actor.id, {
+      status: 'SUCCESS',
+      recipientEmail: email,
     });
     return { sent: true };
+  }
+  private async recordReminderHistory(
+    taskId: string,
+    actorId: string,
+    result: { status: 'SUCCESS' | 'FAILED'; recipientEmail: string | null; error?: string },
+  ) {
+    await this.db.query(
+      `INSERT INTO public.task_history
+       (task_id, action, performed_by, old_value, new_value, created_at)
+       VALUES ($1, 'REMINDER', $2, NULL, $3, NOW())`,
+      [taskId, actorId, JSON.stringify(result)],
+    );
   }
   async resultFile(actor: Actor, taskId: string, fileId: string) {
     await this.get(actor, taskId);

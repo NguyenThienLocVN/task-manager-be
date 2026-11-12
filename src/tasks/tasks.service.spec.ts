@@ -15,6 +15,130 @@ describe('TasksService', () => {
       sendTaskReminder: vi.fn().mockResolvedValue(undefined),
     } as unknown as MailService);
 
+  it('sends reminders to the active responsible user with task details', async () => {
+    const task = {
+      id: 'task-id',
+      organization_id: actor.organizationId,
+      department_id: actor.departmentId,
+      created_by: actor.id,
+      responsible_user_id: 'recipient-id',
+      title: 'Công việc',
+      description: 'Mô tả',
+      due_date: new Date('2026-11-08T00:00:00.000Z'),
+    };
+    const managerQuery = vi.fn()
+      .mockResolvedValueOnce([task])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+    const query = vi.fn().mockResolvedValue([{ email: 'user@example.com' }]);
+    const db = { manager: { query: managerQuery }, query } as unknown as DataSource;
+    const security = {
+      canViewDepartment: vi.fn().mockResolvedValue(false),
+    } as unknown as TaskSecurityService;
+    const sendTaskReminder = vi.fn().mockResolvedValue(undefined);
+    const service = new TasksService(db, security, { sendTaskReminder } as unknown as MailService);
+
+    await expect(service.sendReminder(actor, task.id)).resolves.toEqual({ sent: true });
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining('is_active=true'),
+      ['recipient-id', actor.organizationId],
+    );
+    expect(sendTaskReminder).toHaveBeenCalledWith('user@example.com', {
+      id: 'task-id',
+      title: 'Công việc',
+      description: 'Mô tả',
+      dueDate: '2026-11-08T00:00:00.000Z',
+    });
+    const historyInsert = query.mock.calls.find(([sql]) =>
+      sql.includes('INSERT INTO public.task_history'),
+    );
+    expect(historyInsert?.[1]).toEqual([
+      task.id,
+      actor.id,
+      JSON.stringify({ status: 'SUCCESS', recipientEmail: 'user@example.com' }),
+    ]);
+  });
+
+  it('does not send a reminder when the responsible user has no email', async () => {
+    const task = {
+      id: 'task-id',
+      organization_id: actor.organizationId,
+      department_id: actor.departmentId,
+      created_by: actor.id,
+      responsible_user_id: 'recipient-id',
+    };
+    const managerQuery = vi.fn()
+      .mockResolvedValueOnce([task])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+    const query = vi.fn().mockResolvedValue([]);
+    const db = {
+      manager: { query: managerQuery },
+      query,
+    } as unknown as DataSource;
+    const security = {
+      canViewDepartment: vi.fn().mockResolvedValue(false),
+    } as unknown as TaskSecurityService;
+    const sendTaskReminder = vi.fn();
+    const service = new TasksService(db, security, { sendTaskReminder } as unknown as MailService);
+
+    await expect(service.sendReminder(actor, task.id))
+      .rejects.toThrow('Responsible user has no email address');
+    expect(sendTaskReminder).not.toHaveBeenCalled();
+    const historyInsert = query.mock.calls.find(([sql]) =>
+      sql.includes('INSERT INTO public.task_history'),
+    );
+    expect(historyInsert?.[1]).toEqual([
+      task.id,
+      actor.id,
+      JSON.stringify({
+        status: 'FAILED',
+        recipientEmail: null,
+        error: 'Responsible user has no email address',
+      }),
+    ]);
+  });
+
+  it('records a failed reminder when email delivery fails', async () => {
+    const task = {
+      id: 'task-id',
+      organization_id: actor.organizationId,
+      department_id: actor.departmentId,
+      created_by: actor.id,
+      responsible_user_id: 'recipient-id',
+      title: 'Công việc',
+    };
+    const managerQuery = vi.fn()
+      .mockResolvedValueOnce([task])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+    const query = vi.fn(async (sql: string) => {
+      if (sql.includes('SELECT email')) return [{ email: 'user@example.com' }];
+      return [];
+    });
+    const db = { manager: { query: managerQuery }, query } as unknown as DataSource;
+    const security = {
+      canViewDepartment: vi.fn().mockResolvedValue(false),
+    } as unknown as TaskSecurityService;
+    const service = new TasksService(db, security, {
+      sendTaskReminder: vi.fn().mockRejectedValue(new Error('SMTP delivery failed')),
+    } as unknown as MailService);
+
+    await expect(service.sendReminder(actor, task.id)).rejects.toThrow('SMTP delivery failed');
+    const historyInsert = query.mock.calls.find(([sql]) =>
+      sql.includes('INSERT INTO public.task_history'),
+    );
+    expect(historyInsert?.[1]).toEqual([
+      task.id,
+      actor.id,
+      JSON.stringify({
+        status: 'FAILED',
+        recipientEmail: 'user@example.com',
+        error: 'SMTP delivery failed',
+      }),
+    ]);
+  });
+
   it('allows department viewers to read assignments for tasks in their department', async () => {
     const task = {
       id: 'task-id',

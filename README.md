@@ -41,6 +41,14 @@ Multipart uploads decode filenames as UTF-8 for both task result files and docum
 
 Apply `database/migrations/20261103_create_task_result_files.sql` before deploying this change. Uploaded files are stored using the existing local upload storage.
 
+## Task reminder email
+
+Configure `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, and `MAIL_FROM` in the backend environment. The existing transport uses STARTTLS on port 587 (`secure: false`); implicit TLS on port 465 requires changing the transport configuration. Keep credentials out of version control.
+
+The manual `POST /api/tasks/{id}/remind` endpoint sends to the active responsible user's email after task access checks. It is not limited to overdue or approaching deadlines and does not rate-limit requests. SMTP acceptance (`sent: true`) is not proof of delivery. Internal notifications do not automatically send email.
+
+Customize `src/mail/templates/task-reminder.html` using `{{title}}`, `{{description}}`, and `{{dueDate}}`. Values are HTML-escaped. The description is included in email, so consider the organization's policy for confidential tasks and external mail providers. Build with `npm run build` and deploy `dist/mail/templates/task-reminder.html` with the application; changing the source template requires rebuilding and redeploying.
+
 ## Compile and run the project
 
 ```bash

@@ -1,5 +1,7 @@
 import { Injectable, InternalServerErrorException, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import * as nodemailer from 'nodemailer';
 
 @Injectable()
@@ -28,7 +30,12 @@ export class MailService {
     }
   }
 
-  sendTaskReminder(to: string, task: { title: string; dueDate?: string }) {
+  async sendTaskReminder(to: string, task: {
+    id: string;
+    title: string;
+    description?: string;
+    dueDate?: string;
+  }) {
     const escapeHtml = (value: string) =>
       value.replace(/[&<>"']/g, (character) => ({
         '&': '&amp;',
@@ -37,14 +44,38 @@ export class MailService {
         '"': '&quot;',
         "'": '&#39;',
       })[character]!);
-    const title = escapeHtml(task.title);
-    const dueDate = task.dueDate ? escapeHtml(task.dueDate) : undefined;
+    const formatDueDate = (value?: string) => {
+      if (!value) return 'Chưa có hạn xử lý';
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) {
+        throw new Error('Invalid task due date');
+      }
+      const day = String(date.getUTCDate()).padStart(2, '0');
+      const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+      return `${day}/${month}/${date.getUTCFullYear()}`;
+    };
+    const frontendUrl = this.config.get('FRONTEND_URL') || 'http://localhost:3000';
+    const frontendBaseUrl = new URL(frontendUrl);
+    if (!['http:', 'https:'].includes(frontendBaseUrl.protocol)) {
+      throw new Error('FRONTEND_URL must use HTTP or HTTPS');
+    }
+    const taskUrl = new URL(`/tasks/${encodeURIComponent(task.id)}`, frontendBaseUrl);
+    const template = await readFile(join(__dirname, 'templates', 'task-reminder.html'), 'utf8');
+    const values: Record<string, string> = {
+      title: task.title,
+      description: task.description || 'Không có mô tả',
+      dueDate: formatDueDate(task.dueDate),
+      taskUrl: taskUrl.toString(),
+    };
+    const html = template.replace(
+      /\{\{(title|description|dueDate|taskUrl)\}\}/g,
+      (_, key: string) => escapeHtml(values[key]),
+    );
 
     return this.send(
       to,
       `Nhắc việc: ${task.title.replace(/[\r\n]/g, ' ')}`,
-      `<p>Bạn có công việc cần xử lý: <b>${title}</b></p>
-       ${dueDate ? `<p>Hạn: ${dueDate}</p>` : ''}`,
+      html,
     );
   }
 }
