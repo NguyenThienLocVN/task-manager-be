@@ -21,7 +21,7 @@ describe('MailService task reminders', () => {
     expect(subject).toBe('Nhắc việc: Việc <quan trọng>  Bcc: other');
     expect(html).toContain('Việc &lt;quan trọng&gt;');
     expect(html).toContain('&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt; &amp; text');
-    expect(html).toContain('href="https://tasks.example.com/tasks/task-id"');
+    expect(html).toContain('href="https://tasks.example.com/quan-tri/cong-viec/nhiem-vu/task-id"');
     expect(html).toContain('>Xem công việc</a>');
     expect(html).toContain('08/11/2026');
     expect(html).toContain('<header ');
@@ -46,7 +46,7 @@ describe('MailService task reminders', () => {
     const html = send.mock.calls[0][2];
     expect(html).toContain('Không có mô tả');
     expect(html).toContain('Chưa có hạn xử lý');
-    expect(html).toContain('href="https://qlcv.aiphuongtankhai.vn/tasks/a8ccd46c-804a-4776-a662-f063a5853998"');
+    expect(html).toContain('href="https://qlcv.aiphuongtankhai.vn/quan-tri/cong-viec/nhiem-vu/a8ccd46c-804a-4776-a662-f063a5853998"');
   });
 
   it('formats date-only due dates as dd/mm/yyyy', async () => {

@@ -59,7 +59,10 @@ export class MailService {
     if (!['http:', 'https:'].includes(frontendBaseUrl.protocol)) {
       throw new Error('FRONTEND_URL must use HTTP or HTTPS');
     }
-    const taskUrl = new URL(`/tasks/${encodeURIComponent(task.id)}`, frontendBaseUrl);
+    const taskUrl = new URL(
+      `/quan-tri/cong-viec/nhiem-vu/${encodeURIComponent(task.id)}`,
+      frontendBaseUrl,
+    );
     const template = await readFile(join(__dirname, 'templates', 'task-reminder.html'), 'utf8');
     const values: Record<string, string> = {
       title: task.title,
