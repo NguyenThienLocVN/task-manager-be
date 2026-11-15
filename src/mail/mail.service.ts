@@ -54,7 +54,7 @@ export class MailService {
       const month = String(date.getUTCMonth() + 1).padStart(2, '0');
       return `${day}/${month}/${date.getUTCFullYear()}`;
     };
-    const frontendUrl = this.config.get('FRONTEND_URL') || 'http://localhost:3000';
+    const frontendUrl = this.config.get('FRONTEND_URL') || 'https://qlcv.aiphuongtankhai.vn';
     const frontendBaseUrl = new URL(frontendUrl);
     if (!['http:', 'https:'].includes(frontendBaseUrl.protocol)) {
       throw new Error('FRONTEND_URL must use HTTP or HTTPS');

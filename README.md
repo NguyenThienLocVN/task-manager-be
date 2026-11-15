@@ -43,7 +43,7 @@ Apply `database/migrations/20261103_create_task_result_files.sql` before deployi
 
 ## Task reminder email
 
-Configure `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, and `MAIL_FROM` in the backend environment. The existing transport uses STARTTLS on port 587 (`secure: false`); implicit TLS on port 465 requires changing the transport configuration. Keep credentials out of version control.
+Configure `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, and `MAIL_FROM` in the backend environment. Configure `FRONTEND_URL` to the frontend origin; reminder links default to `https://qlcv.aiphuongtankhai.vn` when it is unset. The existing transport uses STARTTLS on port 587 (`secure: false`); implicit TLS on port 465 requires changing the transport configuration. Keep credentials out of version control.
 
 The manual `POST /api/tasks/{id}/remind` endpoint sends to the active responsible user's email after task access checks. It is not limited to overdue or approaching deadlines and does not rate-limit requests. SMTP acceptance (`sent: true`) is not proof of delivery. Internal notifications do not automatically send email.
 

@@ -38,12 +38,15 @@ describe('MailService task reminders', () => {
     const service = new MailService(new ConfigService());
     const send = vi.spyOn(service, 'send').mockResolvedValue(undefined);
 
-    await service.sendTaskReminder('user@example.com', { id: 'task-id', title: 'Việc' });
+    await service.sendTaskReminder('user@example.com', {
+      id: 'a8ccd46c-804a-4776-a662-f063a5853998',
+      title: 'Việc',
+    });
 
     const html = send.mock.calls[0][2];
     expect(html).toContain('Không có mô tả');
     expect(html).toContain('Chưa có hạn xử lý');
-    expect(html).toContain('href="http://localhost:3000/tasks/task-id"');
+    expect(html).toContain('href="https://qlcv.aiphuongtankhai.vn/tasks/a8ccd46c-804a-4776-a662-f063a5853998"');
   });
 
   it('formats date-only due dates as dd/mm/yyyy', async () => {
